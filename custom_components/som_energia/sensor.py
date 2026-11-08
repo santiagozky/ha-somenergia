@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import statistics
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorEntity,
@@ -44,11 +45,25 @@ class SomEnergiaSensorEntityDescription(SensorEntityDescription):
     """Describe Som Energia sensor entity."""
 
     value_fn: Callable[[PriceData, datetime], float | None]
+    attributes_fn: Callable[[PriceData, datetime], dict[str, Any]] | None = None
+
+
+# Hourly price attribute keys, matching the PVPC integration format
+# (price_00h ... price_23h) expected by consumers such as Omnibattery.
+HOURLY_PRICE_ATTRIBUTES: frozenset[str] = frozenset(
+    f"price_{hour:02d}h" for hour in range(24)
+)
 
 
 def _current_price(data: PriceData, now: datetime) -> float | None:
     """Get current hour price."""
     return data.get_price_at(now)
+
+
+def _today_hourly_prices(data: PriceData, now: datetime) -> dict[str, Any]:
+    """Get today's prices as price_XXh attributes (Madrid local hours)."""
+    hourly = data.get_hourly_prices_for_date(now.astimezone(MADRID_TZ).date())
+    return {f"price_{hour:02d}h": price for hour, price in hourly.items()}
 
 
 def _next_hour_price(data: PriceData, now: datetime) -> float | None:
@@ -103,6 +118,7 @@ SENSOR_DESCRIPTIONS: dict[str, SomEnergiaSensorEntityDescription] = {
         native_unit_of_measurement=PRICE_UNIT,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=_current_price,
+        attributes_fn=_today_hourly_prices,
     ),
     SENSOR_NEXT_HOUR_PRICE: SomEnergiaSensorEntityDescription(
         key=SENSOR_NEXT_HOUR_PRICE,
@@ -210,6 +226,8 @@ class SomEnergiaPricingSensor(
 
     entity_description: SomEnergiaSensorEntityDescription
     _attr_has_entity_name = True
+    # Hourly prices change daily; avoid storing them in the recorder every hour
+    _unrecorded_attributes = HOURLY_PRICE_ATTRIBUTES
 
     def __init__(
         self,
@@ -239,23 +257,30 @@ class SomEnergiaPricingSensor(
         )
 
     @property
-    def native_value(self) -> float | None:
-        """Return the state of the sensor."""
+    def _price_data(self) -> PriceData | None:
+        """Return price data for this tariff."""
         if not self.coordinator.data:
             return None
+        return getattr(self.coordinator.data, self._tariff_key, None)
 
-        # Get price data for this tariff
-        price_data: PriceData | None = getattr(
-            self.coordinator.data, self._tariff_key, None
-        )
-
-        if price_data is None:
+    @property
+    def native_value(self) -> float | None:
+        """Return the state of the sensor."""
+        if (price_data := self._price_data) is None:
             return None
 
         # Calculate value using description's value_fn
         # Use UTC to match API timestamps (parsed as UTC-aware)
         now = dt_util.utcnow()
         return self.entity_description.value_fn(price_data, now)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return extra state attributes (hourly prices for Current Price)."""
+        attributes_fn = self.entity_description.attributes_fn
+        if attributes_fn is None or (price_data := self._price_data) is None:
+            return None
+        return attributes_fn(price_data, dt_util.utcnow())
 
     @property
     def available(self) -> bool:

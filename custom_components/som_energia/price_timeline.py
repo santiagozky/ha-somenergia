@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 MADRID_TZ = ZoneInfo("Europe/Madrid")
@@ -50,6 +50,24 @@ class PriceTimeline:
             for ts, price in zip(self.timestamps, self.prices, strict=False)
             if price is not None and ts.astimezone(MADRID_TZ).date() == target_date
         ]
+
+    def get_hourly_prices_for_date(self, target_date: date) -> dict[int, float]:
+        """Get prices for a full specific date.
+        On day time saving days the repeated hour keeps the first occurrence and the skipped hour is absent.
+        """
+        start_utc = datetime.combine(target_date, time(), tzinfo=MADRID_TZ).astimezone(
+            UTC
+        )
+        hourly: dict[int, float] = {}
+        # Loop through each hour of the day (25 hours to account for DST changes)
+        for offset in range(25):
+            local = (start_utc + timedelta(hours=offset)).astimezone(MADRID_TZ)
+            if local.date() != target_date:
+                break
+            price = self.get_price_at(local)
+            if price is not None and local.hour not in hourly:
+                hourly[local.hour] = price
+        return hourly
 
     def has_usable_prices_for_date(self, target_date: date) -> bool:
         """Return True if there is at least one non-null price for the given Madrid date."""
