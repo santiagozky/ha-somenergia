@@ -58,13 +58,20 @@ class PriceTimeline:
         start_utc = datetime.combine(target_date, time(), tzinfo=MADRID_TZ).astimezone(
             UTC
         )
+        first_date_utc = self.first_date.astimezone(UTC)
+        start_index = int((start_utc - first_date_utc).total_seconds() / 3600) + 1
         hourly: dict[int, float] = {}
         # Loop through each hour of the day (25 hours to account for DST changes)
         for offset in range(25):
             local = (start_utc + timedelta(hours=offset)).astimezone(MADRID_TZ)
             if local.date() != target_date:
                 break
-            price = self.get_price_at(local)
+            price_index = start_index + offset
+            price = (
+                self.prices[price_index]
+                if 0 <= price_index < len(self.prices)
+                else None
+            )
             if price is not None and local.hour not in hourly:
                 hourly[local.hour] = price
         return hourly

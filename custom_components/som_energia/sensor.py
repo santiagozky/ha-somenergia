@@ -53,6 +53,9 @@ class SomEnergiaSensorEntityDescription(SensorEntityDescription):
 HOURLY_PRICE_ATTRIBUTES: frozenset[str] = frozenset(
     f"price_{hour:02d}h" for hour in range(24)
 )
+NEXT_DAY_HOURLY_PRICE_ATTRIBUTES: frozenset[str] = frozenset(
+    f"price_next_day_{hour:02d}h" for hour in range(24)
+)
 
 
 def _current_price(data: PriceData, now: datetime) -> float | None:
@@ -61,9 +64,17 @@ def _current_price(data: PriceData, now: datetime) -> float | None:
 
 
 def _today_hourly_prices(data: PriceData, now: datetime) -> dict[str, Any]:
-    """Get today's prices as price_XXh attributes (Madrid local hours)."""
-    hourly = data.get_hourly_prices_for_date(now.astimezone(MADRID_TZ).date())
-    return {f"price_{hour:02d}h": price for hour, price in hourly.items()}
+    """Get today's and available next-day prices as hourly attributes."""
+    today = now.astimezone(MADRID_TZ).date()
+    today_hourly = data.get_hourly_prices_for_date(today)
+    next_day_hourly = data.get_hourly_prices_for_date(today + timedelta(days=1))
+    return {
+        **{f"price_{hour:02d}h": price for hour, price in today_hourly.items()},
+        **{
+            f"price_next_day_{hour:02d}h": price
+            for hour, price in next_day_hourly.items()
+        },
+    }
 
 
 def _next_hour_price(data: PriceData, now: datetime) -> float | None:
@@ -226,8 +237,10 @@ class SomEnergiaPricingSensor(
 
     entity_description: SomEnergiaSensorEntityDescription
     _attr_has_entity_name = True
-    # Hourly prices change daily; avoid storing them in the recorder every hour
-    _unrecorded_attributes = HOURLY_PRICE_ATTRIBUTES
+    # Hourly prices change daily. they dont change during the day, so they are unrecorded
+    _unrecorded_attributes = (
+        HOURLY_PRICE_ATTRIBUTES | NEXT_DAY_HOURLY_PRICE_ATTRIBUTES
+    )
 
     def __init__(
         self,
@@ -258,7 +271,7 @@ class SomEnergiaPricingSensor(
 
     @property
     def _price_data(self) -> PriceData | None:
-        """Return price data for this tariff."""
+        """Return price data"""
         if not self.coordinator.data:
             return None
         return getattr(self.coordinator.data, self._tariff_key, None)
